@@ -117,13 +117,15 @@ export function TpsChart() {
                 }
               />
               <Area
-                type="monotone"
+                type="linear"
                 dataKey="tps"
                 stroke="#6E54FF"
                 strokeWidth={2}
                 fill="url(#tpsGradient)"
                 dot={false}
-                isAnimationActive={false}
+                isAnimationActive={true}
+                animationDuration={1000}
+                animationEasing="ease-out"
               />
             </AreaChart>
           </ChartContainer>
