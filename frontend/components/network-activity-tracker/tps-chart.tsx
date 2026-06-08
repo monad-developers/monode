@@ -117,7 +117,7 @@ export function TpsChart() {
                 }
               />
               <Area
-                type="linear"
+                type="monotone"
                 dataKey="tps"
                 stroke="#6E54FF"
                 strokeWidth={2}
