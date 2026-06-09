@@ -8,6 +8,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from '@/components/ui/chart'
+import { useSmoothedTpsHistory } from '@/hooks/use-smoothed-tps-history'
 import { useTotalTransactions } from '@/hooks/use-total-transactions'
 import { useTps } from '@/hooks/use-tps'
 import { formatRelativeTime, formatTimeHMS } from '@/lib/timestamp'
@@ -23,8 +24,9 @@ const chartConfig = {
 
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
+  const smoothedHistory = useSmoothedTpsHistory(history)
   const totalTransactions = useTotalTransactions()
-  const hasData = history.length > 0
+  const hasData = smoothedHistory.length > 0
 
   return (
     <div className="flex flex-col h-full">
@@ -59,7 +61,7 @@ export function TpsChart() {
             className="h-full min-w-2xl w-full p-0"
           >
             <AreaChart
-              data={history}
+              data={smoothedHistory}
               margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
             >
               <defs>
