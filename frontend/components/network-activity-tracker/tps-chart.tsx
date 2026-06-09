@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useMemo } from 'react'
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import {
   type ChartConfig,
@@ -10,7 +11,7 @@ import {
 } from '@/components/ui/chart'
 import { useSmoothedTpsHistory } from '@/hooks/use-smoothed-tps-history'
 import { useTotalTransactions } from '@/hooks/use-total-transactions'
-import { useTps } from '@/hooks/use-tps'
+import { TPS_HISTORY_DURATION_MS, useTps } from '@/hooks/use-tps'
 import { formatRelativeTime, formatTimeHMS } from '@/lib/timestamp'
 import { formatIntNumber } from '@/lib/ui'
 import { NetworkActivityStats } from './network-activity-stats'
@@ -22,11 +23,46 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+/**
+ * Pin tick labels to absolute 30-second boundaries within the visible domain.
+ * Because each tick has a fixed timestamp, its pixel position is purely a
+ * function of the smoothly-advancing domain — so ticks slide left continuously
+ * with the chart instead of being re-picked by recharts when the data set
+ * grows. Once a minute the leftmost tick slides off-screen and a new one
+ * appears at the right edge.
+ */
+const TICK_INTERVAL_MS = 30_000
+
+function buildTicks(minTimestamp: number, maxTimestamp: number): number[] {
+  const ticks: number[] = []
+  let t = Math.floor(maxTimestamp / TICK_INTERVAL_MS) * TICK_INTERVAL_MS
+  while (t >= minTimestamp) {
+    ticks.push(t)
+    t -= TICK_INTERVAL_MS
+  }
+  return ticks.reverse()
+}
+
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const smoothedHistory = useSmoothedTpsHistory(history)
   const totalTransactions = useTotalTransactions()
   const hasData = smoothedHistory.length > 0
+
+  // Anchor both edges of the domain to the smoothly-advancing tip so the
+  // axis scrolls continuously. Anchoring the left edge to `latest - window`
+  // (instead of the oldest history point) prevents a jump at the left every
+  // time `useTps` drops an expired point.
+  const xDomain = useMemo<[number, number] | undefined>(() => {
+    if (smoothedHistory.length === 0) return undefined
+    const latest = smoothedHistory[smoothedHistory.length - 1].timestamp
+    return [latest - TPS_HISTORY_DURATION_MS, latest]
+  }, [smoothedHistory])
+
+  const xTicks = useMemo(() => {
+    if (xDomain === undefined) return undefined
+    return buildTicks(xDomain[0], xDomain[1])
+  }, [xDomain])
 
   return (
     <div className="flex flex-col h-full">
@@ -79,12 +115,16 @@ export function TpsChart() {
               <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
               <XAxis
                 dataKey="timestamp"
+                type="number"
+                domain={xDomain ?? ['dataMin', 'dataMax']}
+                ticks={xTicks}
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
                 minTickGap={80}
                 tick={{ fill: 'var(--chart-axis)', fontSize: 12 }}
                 tickFormatter={formatRelativeTime}
+                allowDataOverflow
               />
               <YAxis
                 domain={[0, 'auto']}

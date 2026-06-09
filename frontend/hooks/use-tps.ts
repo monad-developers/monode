@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useEventsContext } from '@/contexts/events-context'
 
 /** Duration of TPS history to keep */
-const TPS_HISTORY_DURATION_MS = 5 * 60 * 1000
+export const TPS_HISTORY_DURATION_MS = 5 * 60 * 1000
 
 export interface TpsDataPoint {
   timestamp: number
