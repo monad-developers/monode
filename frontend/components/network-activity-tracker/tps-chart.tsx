@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useEffect, useRef, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import {
   type ChartConfig,
@@ -21,10 +22,40 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+/** Visible time window, matching the TPS history kept by useTps */
+const WINDOW_MS = 5 * 60 * 1000
+
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const totalTransactions = useTotalTransactions()
   const hasData = history.length > 0
+  const latest = hasData ? history[history.length - 1].timestamp : 0
+
+  // The X axis is a continuous time scale whose right boundary, `edge`, eases
+  // toward the newest point's timestamp. When a point is appended, `edge` lags
+  // behind it and catches up over a few frames; the freshly added segment lives
+  // just past the boundary (clipped by allowDataOverflow) and is revealed
+  // sliding in from the right rather than snapping into place. The loop stops
+  // once `edge` reaches `latest`, so the chart is still between points.
+  const [edge, setEdge] = useState(latest)
+  const edgeRef = useRef(latest)
+  useEffect(() => {
+    let frame: number
+    const animate = () => {
+      const diff = latest - edgeRef.current
+      // Close 15% of the remaining gap each frame: fast start, gentle settle.
+      if (Math.abs(diff) < 1) {
+        edgeRef.current = latest
+        setEdge(latest)
+        return
+      }
+      edgeRef.current += diff * 0.15
+      setEdge(edgeRef.current)
+      frame = requestAnimationFrame(animate)
+    }
+    frame = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(frame)
+  }, [latest])
 
   return (
     <div className="flex flex-col h-full">
@@ -77,6 +108,10 @@ export function TpsChart() {
               <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
               <XAxis
                 dataKey="timestamp"
+                type="number"
+                scale="time"
+                domain={[Math.max(edge - WINDOW_MS, history[0].timestamp), edge]}
+                allowDataOverflow
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
