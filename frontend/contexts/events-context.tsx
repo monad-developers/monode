@@ -6,10 +6,11 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
-import type { SerializableEventData } from '@/types/events'
+import type { EventName, SerializableEventData } from '@/types/events'
 
 interface AccessEntry<T> {
   key: T
@@ -27,16 +28,29 @@ interface ServerMessage {
   TPS?: number
 }
 
+export interface SubscribeOptions {
+  // Restrict delivery to these event types. Omit to receive all events.
+  eventTypes?: readonly EventName[]
+}
+
 interface EventsContextValue {
   accountAccesses: AccessEntry<string>[]
   storageAccesses: AccessEntry<[string, string]>[]
   isConnected: boolean
-  subscribe: (callback: (event: SerializableEventData) => void) => () => void
+  subscribe: (
+    callback: (event: SerializableEventData) => void,
+    options?: SubscribeOptions,
+  ) => () => void
   subscribeToTps: (callback: (tps: number) => void) => () => void
 }
 
 interface EventsProviderProps {
   children: ReactNode
+}
+
+interface Subscriber {
+  callback: (event: SerializableEventData) => void
+  eventTypes: ReadonlySet<EventName> | null
 }
 
 const EventsContext = createContext<EventsContextValue | null>(null)
@@ -57,9 +71,7 @@ export function EventsProvider({ children }: EventsProviderProps) {
   >([])
   const [isConnected, setIsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
-  const subscribersRef = useRef<
-    Map<string, (event: SerializableEventData) => void>
-  >(new Map())
+  const subscribersRef = useRef<Map<string, Subscriber>>(new Map())
   const tpsSubscribersRef = useRef<Map<string, (tps: number) => void>>(
     new Map(),
   )
@@ -84,6 +96,17 @@ export function EventsProvider({ children }: EventsProviderProps) {
         }
 
         ws.onmessage = (event) => {
+          // Browsers don't throttle WebSocket onmessage in background tabs, but
+          // the heavy downstream work (setState fan-out, viem.decodeEventLog)
+          // still allocates aggressively. Dropping messages while hidden keeps
+          // the JS heap from blowing up during long backgrounded sessions.
+          if (
+            typeof document !== 'undefined' &&
+            document.visibilityState === 'hidden'
+          ) {
+            return
+          }
+
           try {
             const message: ServerMessage = JSON.parse(event.data)
 
@@ -101,13 +124,19 @@ export function EventsProvider({ children }: EventsProviderProps) {
 
             if (message.Events && message.Events.length > 0) {
               const newEvents = message.Events
+              const subscribers = subscribersRef.current
 
-              // Notify all subscribers
-              newEvents.forEach((evt) => {
-                subscribersRef.current.forEach((callback) => {
-                  callback(evt)
+              for (const evt of newEvents) {
+                const eventType = evt.payload.type as EventName
+                subscribers.forEach((sub) => {
+                  if (
+                    sub.eventTypes === null ||
+                    sub.eventTypes.has(eventType)
+                  ) {
+                    sub.callback(evt)
+                  }
                 })
-              })
+              }
             }
           } catch (error) {
             console.error('Failed to parse message:', error)
@@ -147,11 +176,17 @@ export function EventsProvider({ children }: EventsProviderProps) {
   }, [])
 
   const subscribe = useCallback(
-    (callback: (event: SerializableEventData) => void): (() => void) => {
+    (
+      callback: (event: SerializableEventData) => void,
+      options?: SubscribeOptions,
+    ): (() => void) => {
       const subscriberId = Math.random().toString(36).slice(2)
-      subscribersRef.current.set(subscriberId, callback)
+      const eventTypes =
+        options?.eventTypes && options.eventTypes.length > 0
+          ? new Set(options.eventTypes)
+          : null
+      subscribersRef.current.set(subscriberId, { callback, eventTypes })
 
-      // Return unsubscribe function
       return () => {
         subscribersRef.current.delete(subscriberId)
       }
@@ -168,13 +203,18 @@ export function EventsProvider({ children }: EventsProviderProps) {
     }
   }, [])
 
-  const value: EventsContextValue = {
-    accountAccesses,
-    storageAccesses,
-    isConnected,
-    subscribe,
-    subscribeToTps,
-  }
+  // Without memoization, every TopAccesses update re-renders every consumer of
+  // useEventsContext, even ones that only need subscribe/subscribeToTps.
+  const value = useMemo<EventsContextValue>(
+    () => ({
+      accountAccesses,
+      storageAccesses,
+      isConnected,
+      subscribe,
+      subscribeToTps,
+    }),
+    [accountAccesses, storageAccesses, isConnected, subscribe, subscribeToTps],
+  )
 
   return (
     <EventsContext.Provider value={value}>{children}</EventsContext.Provider>

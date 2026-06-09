@@ -1,267 +1,246 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   fromNsToMsPrecise,
   getBlockWallTimeMs,
   getTotalTransactionTimeMs,
 } from '@/lib/block-metrics'
-import type { Block } from '@/types/block'
-import type { SerializableEventData } from '@/types/events'
+import type { Block, BlockState } from '@/types/block'
+import type { EventName, SerializableEventData } from '@/types/events'
+import type { Transaction } from '@/types/transaction'
 import { useEvents } from './use-events'
 
 const MAX_BLOCKS = 200
+const MAX_INFLIGHT_BLOCKS = MAX_BLOCKS
 
 // Highlight when total tx execution time exceeds block execution time.
 // Keep this as a single constant so UI/copy can stay consistent.
 export const PARALLEL_EXECUTION_RATIO_THRESHOLD = 1
 
+const EXECUTION_EVENT_TYPES: readonly EventName[] = [
+  'BlockStart',
+  'TxnHeaderStart',
+  'TxnEnd',
+  'TxnEvmOutput',
+  'BlockEnd',
+  'BlockQC',
+  'BlockFinalized',
+  'BlockVerified',
+]
+
+interface InflightBlock {
+  block: Omit<Block, 'transactions'>
+  // Keyed by txnIndex so per-event updates are O(1) instead of O(N).
+  transactions: Map<number, Transaction>
+}
+
+/**
+ * Build the immutable Block snapshot that gets pushed into React state.
+ */
+function freezeInflightBlock(entry: InflightBlock, state: BlockState): Block {
+  const txs = Array.from(entry.transactions.values()).sort(
+    (a, b) => a.txnIndex - b.txnIndex,
+  )
+  return {
+    ...entry.block,
+    state,
+    transactions: txs,
+  }
+}
+
 /**
  * Hook to track block execution events and derive timing metrics.
+ *
+ * In-flight blocks (and their transactions) live in refs and are mutated in
+ * place as events arrive. Only when a block finalizes do we materialize it
+ * into React state, which avoids the O(N²) array allocations the previous
+ * implementation did on every txn event during a block.
  */
 export function useBlockExecutionTracker() {
-  const [blocks, setBlocks] = useState<Block[]>([])
+  const [finalizedBlocks, setFinalizedBlocks] = useState<Block[]>([])
+  const inflightRef = useRef<Map<number, InflightBlock>>(new Map())
+  const currentBlockNumberRef = useRef<number | null>(null)
 
-  /**
-   * Replace the last element of an array with a new value.
-   * Returns a new array (shallow copy) so React detects the change,
-   * but reuses all object references except the replaced element.
-   */
-  const replaceLastBlock = (prev: Block[], updated: Block): Block[] => {
-    const next = prev.slice()
-    next[next.length - 1] = updated
-    return next
-  }
+  const updateFinalizedState = useCallback(
+    (blockNumber: number, state: BlockState) => {
+      setFinalizedBlocks((prev) => {
+        const index = prev.findIndex((b) => b.number === blockNumber)
+        if (index === -1) return prev
+        if (prev[index].state === state) return prev
+        const next = prev.slice()
+        next[index] = { ...prev[index], state }
+        return next
+      })
+    },
+    [],
+  )
 
-  /**
-   * Replace a single block by index.
-   * Returns a new array (shallow copy) with only that one element changed.
-   */
-  const replaceBlockAt = (
-    prev: Block[],
-    index: number,
-    updated: Block,
-  ): Block[] => {
-    const next = prev.slice()
-    next[index] = updated
-    return next
-  }
-
-  // Handle real-time events from the backend
-  const handleEvent = useCallback((event: SerializableEventData) => {
-    switch (event.payload.type) {
-      case 'BlockStart': {
-        const payload = event.payload
-        const blockNumber = event.block_number || payload.block_number
-        if (blockNumber === undefined) {
-          console.warn('BlockStart event missing block_number:', event)
-          break
+  const promoteInflightToFinalized = useCallback(
+    (blockNumber: number, state: BlockState) => {
+      const entry = inflightRef.current.get(blockNumber)
+      if (!entry) {
+        updateFinalizedState(blockNumber, state)
+        return
+      }
+      inflightRef.current.delete(blockNumber)
+      if (currentBlockNumberRef.current === blockNumber) {
+        currentBlockNumberRef.current = null
+      }
+      const frozen = freezeInflightBlock(entry, state)
+      setFinalizedBlocks((prev) => {
+        const next = [...prev, frozen]
+        if (next.length > MAX_BLOCKS) {
+          return next.slice(-Math.ceil(MAX_BLOCKS / 3))
         }
-        setBlocks((prev) => {
-          const existingBlock = prev.find((b) => b.id === payload.block_id)
+        return next
+      })
+    },
+    [updateFinalizedState],
+  )
 
-          // Should never happen
-          if (existingBlock) {
-            console.warn(
-              '2 BlockStart events received on block:',
-              payload.block_number,
-            )
-            const lastBlock = prev[prev.length - 1]
-            return replaceLastBlock(prev, {
-              ...lastBlock,
-              state: 'proposed',
-              startTimestamp: BigInt(event.timestamp_ns),
-            })
+  const handleEvent = useCallback(
+    (event: SerializableEventData) => {
+      switch (event.payload.type) {
+        case 'BlockStart': {
+          const payload = event.payload
+          const blockNumber = event.block_number || payload.block_number
+          if (blockNumber === undefined) {
+            console.warn('BlockStart event missing block_number:', event)
+            return
           }
-
-          // Create new block — this is the only case that grows the array
-          const newBlocks = [
-            ...prev,
-            {
+          const existing = inflightRef.current.get(blockNumber)
+          if (existing && existing.block.id === payload.block_id) {
+            // Duplicate BlockStart for the same block id — refresh timing.
+            existing.block.state = 'proposed'
+            existing.block.startTimestamp = BigInt(event.timestamp_ns)
+            currentBlockNumberRef.current = blockNumber
+            return
+          }
+          inflightRef.current.set(blockNumber, {
+            block: {
               id: payload.block_id,
               number: blockNumber,
-              state: 'proposed' as const,
+              state: 'proposed',
               startTimestamp: BigInt(event.timestamp_ns),
-              transactions: [],
             },
-          ]
+            transactions: new Map(),
+          })
+          currentBlockNumberRef.current = blockNumber
 
-          if (newBlocks.length > MAX_BLOCKS) {
-            return newBlocks.slice(-Math.ceil(MAX_BLOCKS / 3))
+          // Defensive cap in case finalization events never arrive for some
+          // blocks — without this the inflight map could grow without bound.
+          if (inflightRef.current.size > MAX_INFLIGHT_BLOCKS) {
+            const oldest = Math.min(...inflightRef.current.keys())
+            inflightRef.current.delete(oldest)
           }
-          return newBlocks
-        })
-        break
-      }
+          return
+        }
 
-      case 'TxnHeaderStart': {
-        const payload = event.payload
-        setBlocks((prev) => {
-          if (prev.length === 0) {
+        case 'TxnHeaderStart': {
+          const payload = event.payload
+          const blockNumber = currentBlockNumberRef.current
+          if (blockNumber === null) {
             console.warn(
-              'TxnHeaderStart event received but no blocks exist yet:',
+              'TxnHeaderStart event received but no inflight block:',
               event,
             )
-            return prev
+            return
           }
-          const lastBlock = prev[prev.length - 1]
-          return replaceLastBlock(prev, {
-            ...lastBlock,
-            transactions: [
-              ...(lastBlock.transactions ?? []),
-              {
-                id: payload.txn_index,
-                txnIndex: payload.txn_index,
-                txnHash: payload.txn_hash,
-                startTimestamp: BigInt(event.timestamp_ns),
-                transactionTime: undefined,
-                gasLimit: payload.gas_limit,
-                sender: payload.sender,
-                to: payload.to,
-              },
-            ],
+          const entry = inflightRef.current.get(blockNumber)
+          if (!entry) return
+          entry.transactions.set(payload.txn_index, {
+            id: payload.txn_index,
+            txnIndex: payload.txn_index,
+            txnHash: payload.txn_hash,
+            startTimestamp: BigInt(event.timestamp_ns),
+            transactionTime: undefined,
+            gasLimit: payload.gas_limit,
+            sender: payload.sender,
+            to: payload.to,
           })
-        })
-        break
-      }
-
-      case 'TxnEnd': {
-        if (event.txn_idx === undefined) {
-          console.warn('TxnEnd event missing txn_idx:', event)
-          break
+          return
         }
-        setBlocks((prev) => {
-          if (prev.length === 0) {
-            console.warn(
-              'TxnEnd event received but no blocks exist yet:',
-              event,
-            )
-            return prev
+
+        case 'TxnEnd': {
+          if (event.txn_idx === undefined) {
+            console.warn('TxnEnd event missing txn_idx:', event)
+            return
           }
-          const lastBlock = prev[prev.length - 1]
-          return replaceLastBlock(prev, {
-            ...lastBlock,
-            transactions: (lastBlock.transactions ?? []).map((tx) =>
-              tx.txnIndex === event.txn_idx && tx.startTimestamp
-                ? {
-                    ...tx,
-                    endTimestamp: BigInt(event.timestamp_ns),
-                    transactionTime:
-                      BigInt(event.timestamp_ns) - tx.startTimestamp,
-                  }
-                : tx,
-            ),
-          })
-        })
-        break
-      }
+          const blockNumber = currentBlockNumberRef.current
+          if (blockNumber === null) return
+          const entry = inflightRef.current.get(blockNumber)
+          if (!entry) return
+          const tx = entry.transactions.get(event.txn_idx)
+          if (!tx || tx.startTimestamp === undefined) return
+          const endTs = BigInt(event.timestamp_ns)
+          tx.endTimestamp = endTs
+          tx.transactionTime = endTs - tx.startTimestamp
+          return
+        }
 
-      case 'TxnEvmOutput': {
-        const payload = event.payload
-        setBlocks((prev) => {
-          if (prev.length === 0) {
-            console.warn(
-              'TxnEvmOutput event received but no blocks exist yet:',
-              event,
-            )
-            return prev
+        case 'TxnEvmOutput': {
+          const payload = event.payload
+          const blockNumber = currentBlockNumberRef.current
+          if (blockNumber === null) return
+          const entry = inflightRef.current.get(blockNumber)
+          if (!entry) return
+          const tx = entry.transactions.get(payload.txn_index)
+          if (!tx) return
+          tx.status = payload.status
+          tx.gasUsed = payload.gas_used
+          return
+        }
+
+        case 'BlockEnd': {
+          const blockNumber = event.block_number
+          if (blockNumber === undefined) return
+          const entry = inflightRef.current.get(blockNumber)
+          if (!entry || entry.block.startTimestamp === undefined) return
+          const endTs = BigInt(event.timestamp_ns)
+          entry.block.endTimestamp = endTs
+          entry.block.executionTime = endTs - entry.block.startTimestamp
+          return
+        }
+
+        case 'BlockQC': {
+          const payload = event.payload
+          const blockNumber = event.block_number || payload.block_number
+          if (blockNumber === undefined) return
+          const entry = inflightRef.current.get(blockNumber)
+          if (entry) {
+            entry.block.state = 'voted'
+          } else {
+            updateFinalizedState(blockNumber, 'voted')
           }
-          const lastBlock = prev[prev.length - 1]
-          return replaceLastBlock(prev, {
-            ...lastBlock,
-            transactions: (lastBlock.transactions ?? []).map((tx) =>
-              tx.txnIndex === payload.txn_index
-                ? {
-                    ...tx,
-                    status: payload.status,
-                    gasUsed: payload.gas_used,
-                  }
-                : tx,
-            ),
-          })
-        })
-        break
-      }
-
-      case 'BlockQC': {
-        const payload = event.payload
-        const blockNumber = event.block_number || payload.block_number
-        if (blockNumber === undefined) {
-          break
+          return
         }
-        setBlocks((prev) => {
-          const index = prev.findIndex((b) => b.number === blockNumber)
-          if (index === -1) return prev
-          return replaceBlockAt(prev, index, {
-            ...prev[index],
-            state: 'voted',
-          })
-        })
-        break
-      }
 
-      case 'BlockFinalized': {
-        const payload = event.payload
-        const blockNumber = event.block_number || payload.block_number
-        if (blockNumber === undefined) {
-          break
+        case 'BlockFinalized': {
+          const payload = event.payload
+          const blockNumber = event.block_number || payload.block_number
+          if (blockNumber === undefined) return
+          promoteInflightToFinalized(blockNumber, 'finalized')
+          return
         }
-        setBlocks((prev) => {
-          const index = prev.findIndex((b) => b.number === blockNumber)
-          if (index === -1) return prev
-          return replaceBlockAt(prev, index, {
-            ...prev[index],
-            state: 'finalized',
-          })
-        })
-        break
-      }
 
-      case 'BlockVerified': {
-        const payload = event.payload
-        const blockNumber = event.block_number || payload.block_number
-        if (blockNumber === undefined) {
-          break
+        case 'BlockVerified': {
+          const payload = event.payload
+          const blockNumber = event.block_number || payload.block_number
+          if (blockNumber === undefined) return
+          promoteInflightToFinalized(blockNumber, 'verified')
+          return
         }
-        setBlocks((prev) => {
-          const index = prev.findIndex((b) => b.number === blockNumber)
-          if (index === -1) return prev
-          return replaceBlockAt(prev, index, {
-            ...prev[index],
-            state: 'verified',
-          })
-        })
-        break
+
+        default:
+          return
       }
+    },
+    [promoteInflightToFinalized, updateFinalizedState],
+  )
 
-      case 'BlockEnd':
-        setBlocks((prev) => {
-          const index = prev.findIndex(
-            (b) => b.number === event?.block_number && b.startTimestamp,
-          )
-          if (index === -1) return prev
-          const block = prev[index]
-          return replaceBlockAt(prev, index, {
-            ...block,
-            endTimestamp: BigInt(event.timestamp_ns),
-            executionTime: BigInt(event.timestamp_ns) - block.startTimestamp!,
-          })
-        })
-        break
-
-      default:
-        break
-    }
-  }, [])
-
-  // Subscribe to real-time events
   useEvents({
     onEvent: handleEvent,
+    eventTypes: EXECUTION_EVENT_TYPES,
   })
-  // Memoize computed values to avoid unnecessary recalculations
-  const finalizedBlocks = useMemo(
-    () =>
-      blocks.filter((b) => b.state === 'finalized' || b.state === 'verified'),
-    [blocks],
-  )
 
   const maxBlockExecutionTime = useMemo(() => {
     return fromNsToMsPrecise(
@@ -301,7 +280,6 @@ export function useBlockExecutionTracker() {
   }, [finalizedBlocks])
 
   return {
-    blocks,
     finalizedBlocks,
     maxBlockExecutionTime,
     normalizedTimeScaleMs,
