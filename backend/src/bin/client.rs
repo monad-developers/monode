@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         },
                                         SerializableExecEvent::TxnEvmOutput { txn_index, .. } => {
                                             if let Some((txn_hash, txn_start_ns)) = client_state.txs_start_ns.remove(&txn_index) {
-                                                let txn_duration = std::time::Duration::from_nanos((event.timestamp_ns - txn_start_ns) as u64);
+                                                let txn_duration = std::time::Duration::from_nanos(event.timestamp_ns - txn_start_ns);
                                                 client_state.block_txns_total_duration += txn_duration;
 
                                                 log_event!("TxnEvmOutput", txn_index = txn_index, txn_hash = txn_hash, duration = txn_duration);
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         },
                                         SerializableExecEvent::BlockPerfEvmExit => {
                                             log_event!("BlockPerfEvmExit");
-                                            let block_duration = std::time::Duration::from_nanos((event.timestamp_ns - client_state.block_start_ns) as u64);
+                                            let block_duration = std::time::Duration::from_nanos(event.timestamp_ns - client_state.block_start_ns);
                                             let parallel_execution_savings = client_state.block_txns_total_duration.checked_sub(block_duration);
                                             let savings_pct = if parallel_execution_savings.is_none() { // This only happens with really small/empty blocks
                                                 error!("Parallel execution savings is negative: txs={:?} block={:?} height={}", client_state.block_txns_total_duration, block_duration, client_state.current_block_number);
