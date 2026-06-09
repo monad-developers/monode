@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import {
   type ChartConfig,
@@ -10,7 +10,7 @@ import {
   ChartTooltipContent,
 } from '@/components/ui/chart'
 import { useTotalTransactions } from '@/hooks/use-total-transactions'
-import { useTps } from '@/hooks/use-tps'
+import { type TpsDataPoint, useTps } from '@/hooks/use-tps'
 import { formatRelativeTime, formatTimeHMS } from '@/lib/timestamp'
 import { formatIntNumber } from '@/lib/ui'
 import { NetworkActivityStats } from './network-activity-stats'
@@ -22,40 +22,74 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
-/** Visible time window, matching the TPS history kept by useTps */
-const WINDOW_MS = 5 * 60 * 1000
+/** Maximum visible time window of the chart, matching the TPS history retained. */
+const CHART_WINDOW_MS = 5 * 60 * 1000
+
+/** Smallest window to show early on, so the chart starts zoomed in rather than mostly empty. */
+const MIN_WINDOW_MS = 3 * 1000
+
+/**
+ * Drives a smoothly advancing "now" so the chart's x-domain slides
+ * continuously instead of jumping by one slot as each point arrives.
+ * Updates every animation frame for the smoothest motion; rAF auto-pauses
+ * when the tab is hidden.
+ */
+function useSlidingNow(): number {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    let raf: number
+    const tick = () => {
+      setNow(Date.now())
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return now
+}
+
+/**
+ * Returns the history with its newest segment progressively "drawn": instead of
+ * the last point appearing fully-formed, a head vertex travels from the previous
+ * point to the newest one over the inter-arrival interval. `now` advances every
+ * frame, so the head moves smoothly. Once it reaches the newest point the segment
+ * is complete and the next arrival starts drawing the following one.
+ */
+function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
+  if (history.length < 2) return history
+
+  const target = history[history.length - 1]
+  const from = history[history.length - 2]
+  const duration = target.timestamp - from.timestamp
+  if (duration <= 0) return history
+
+  const progress = Math.min(1, Math.max(0, (now - target.timestamp) / duration))
+  const head: TpsDataPoint = {
+    timestamp: from.timestamp + (target.timestamp - from.timestamp) * progress,
+    tps: from.tps + (target.tps - from.tps) * progress,
+  }
+
+  return [...history.slice(0, -1), head]
+}
 
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const totalTransactions = useTotalTransactions()
   const hasData = history.length > 0
-  const latest = hasData ? history[history.length - 1].timestamp : 0
+  const now = useSlidingNow()
 
-  // The X axis is a continuous time scale whose right boundary, `edge`, eases
-  // toward the newest point's timestamp. When a point is appended, `edge` lags
-  // behind it and catches up over a few frames; the freshly added segment lives
-  // just past the boundary (clipped by allowDataOverflow) and is revealed
-  // sliding in from the right rather than snapping into place. The loop stops
-  // once `edge` reaches `latest`, so the chart is still between points.
-  const [edge, setEdge] = useState(latest)
-  const edgeRef = useRef(latest)
-  useEffect(() => {
-    let frame: number
-    const animate = () => {
-      const diff = latest - edgeRef.current
-      // Close 15% of the remaining gap each frame: fast start, gentle settle.
-      if (Math.abs(diff) < 1) {
-        edgeRef.current = latest
-        setEdge(latest)
-        return
-      }
-      edgeRef.current += diff * 0.15
-      setEdge(edgeRef.current)
-      frame = requestAnimationFrame(animate)
-    }
-    frame = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(frame)
-  }, [latest])
+  // Start zoomed in to the earliest data point and expand the window as data
+  // accumulates, capping at CHART_WINDOW_MS once we have 5 minutes of history.
+  const earliest = history[0]?.timestamp ?? now
+  const windowStart = Math.max(
+    now - CHART_WINDOW_MS,
+    Math.min(earliest, now - MIN_WINDOW_MS),
+  )
+
+  // Progressively draw the newest segment rather than snapping it into place.
+  const chartData = drawHistory(history, now)
 
   return (
     <div className="flex flex-col h-full">
@@ -90,7 +124,7 @@ export function TpsChart() {
             className="h-full min-w-2xl w-full p-0"
           >
             <AreaChart
-              data={history}
+              data={chartData}
               margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
             >
               <defs>
@@ -110,8 +144,8 @@ export function TpsChart() {
                 dataKey="timestamp"
                 type="number"
                 scale="time"
-                domain={[Math.max(edge - WINDOW_MS, history[0].timestamp), edge]}
-                allowDataOverflow
+                domain={[windowStart, now]}
+                allowDataOverflow={true}
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
