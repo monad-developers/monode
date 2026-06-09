@@ -1,4 +1,13 @@
 {
+  "name": "monode",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter frontend dev",
+    "build": "pnpm --filter frontend build",
+    "start": "pnpm --filter frontend start",
+    "typecheck": "pnpm --filter frontend typecheck",
+    "lint": "biome check ."
+  },
   "devDependencies": {
     "@biomejs/biome": "2.1.2"
   }
