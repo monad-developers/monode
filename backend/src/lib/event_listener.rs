@@ -85,7 +85,7 @@ impl EventName {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         match s {
             "RECORD_ERROR" => Some(EventName::RecordError),
             "BLOCK_START" => Some(EventName::BlockStart),
@@ -157,7 +157,7 @@ fn event_to_data(event: &EventDescriptor<ExecEventDecoder>) -> Option<EventData>
     } = event.info();
     
     // Convert event_type to EventName enum for type safety
-    let event_name = EventName::from_str(EXEC_EVENT_NAMES[event_type as usize])?;
+    let event_name = EventName::from_name(EXEC_EVENT_NAMES[event_type as usize])?;
 
     // Get block number if present
     let block_number = if flow_info.block_seqno != 0 {

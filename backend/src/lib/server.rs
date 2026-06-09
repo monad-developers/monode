@@ -43,7 +43,7 @@ pub struct TopAccessesData {
 
 #[derive(Debug, Clone)]
 pub enum EventDataOrMetrics {
-    Event(EventData),
+    Event(Box<EventData>),
     TopAccesses(TopAccessesData),
     TPS(usize)
 }
@@ -95,7 +95,7 @@ fn process_event(
 ) {
     match event {
         EventDataOrMetrics::Event(event_data) => {
-            let serializable = SerializableEventData::from(&event_data);
+            let serializable = SerializableEventData::from(&*event_data);
             if filter.matches_event(&serializable) {
                 events_buf.push(serializable);
             }
@@ -291,7 +291,7 @@ async fn run_event_forwarder_task(
                 // Send accesses update on BlockEnd events (after all access events are processed)
                 let send_accesses_update = matches!(event_data.event_name, EventName::BlockEnd);
 
-                let _ = event_broadcast_sender.send(EventDataOrMetrics::Event(event_data));
+                let _ = event_broadcast_sender.send(EventDataOrMetrics::Event(Box::new(event_data)));
 
                 if send_accesses_update {
                     let top_accesses_data = TopAccessesData {
