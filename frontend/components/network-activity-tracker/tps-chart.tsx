@@ -74,6 +74,27 @@ function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
   return [...history.slice(0, -1), head]
 }
 
+/** Nice, human-friendly tick steps in ms for the relative-time x-axis. */
+const TICK_STEPS_MS = [1, 2, 5, 10, 15, 30, 60, 120, 300].map((s) => s * 1000)
+
+/**
+ * Builds evenly-spaced ticks anchored at the sliding edge (`end`) and stepping
+ * backwards. Anchoring at `end` keeps a single "now" pinned to the far right;
+ * supplying ticks explicitly also avoids recharts' auto-generated ticks landing
+ * both at the edge and at the current second (which both format as "now").
+ */
+function buildTicks(start: number, end: number): number[] {
+  const step =
+    TICK_STEPS_MS.find((s) => s >= (end - start) / 6) ??
+    TICK_STEPS_MS[TICK_STEPS_MS.length - 1]
+
+  const ticks: number[] = []
+  for (let t = end; t >= start; t -= step) {
+    ticks.push(t)
+  }
+  return ticks.reverse()
+}
+
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const totalTransactions = useTotalTransactions()
@@ -90,6 +111,7 @@ export function TpsChart() {
 
   // Progressively draw the newest segment rather than snapping it into place.
   const chartData = drawHistory(history, now)
+  const ticks = buildTicks(windowStart, now)
 
   return (
     <div className="flex flex-col h-full">
@@ -145,6 +167,7 @@ export function TpsChart() {
                 type="number"
                 scale="time"
                 domain={[windowStart, now]}
+                ticks={ticks}
                 allowDataOverflow={true}
                 tickLine={false}
                 axisLine={false}
