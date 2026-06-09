@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useEffect, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import {
   type ChartConfig,
@@ -21,10 +22,27 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+/** Visible time window, matching the TPS history kept by useTps */
+const WINDOW_MS = 5 * 60 * 1000
+
 export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const totalTransactions = useTotalTransactions()
   const hasData = history.length > 0
+
+  // Advance a "now" clock every animation frame so the time-windowed X axis
+  // domain slides continuously. New points enter smoothly from the right edge
+  // instead of popping in a discrete category slot.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    let frame: number
+    const tick = () => {
+      setNow(Date.now())
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [])
 
   return (
     <div className="flex flex-col h-full">
@@ -77,6 +95,10 @@ export function TpsChart() {
               <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
               <XAxis
                 dataKey="timestamp"
+                type="number"
+                scale="time"
+                domain={[Math.max(now - WINDOW_MS, history[0].timestamp), now]}
+                allowDataOverflow
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
@@ -123,9 +145,7 @@ export function TpsChart() {
                 strokeWidth={2}
                 fill="url(#tpsGradient)"
                 dot={false}
-                isAnimationActive={true}
-                animationDuration={1000}
-                animationEasing="ease-out"
+                isAnimationActive={false}
               />
             </AreaChart>
           </ChartContainer>
