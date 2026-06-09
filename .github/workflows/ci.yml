@@ -59,15 +59,16 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    # Match the backend Dockerfile's build image so bindgen sees a libclang
+    # new enough for the upstream C23 (`constexpr`) headers from monad-bft.
+    container: rust:1.91-slim
     steps:
-      - uses: actions/checkout@v4
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev libclang-dev libzstd-dev libhugetlbfs-dev
-      - uses: dtolnay/rust-toolchain@1.91.0
-        with:
-          components: rustfmt, clippy
+          apt-get update
+          apt-get install -y git curl gcc g++ cmake pkg-config libssl-dev libclang-dev libzstd-dev libhugetlbfs-dev
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
