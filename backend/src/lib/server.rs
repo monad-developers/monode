@@ -80,7 +80,7 @@ impl TPSTracker {
         self.block_2_txs = self.block_3_txs;
         self.block_3_txs = self.current_tx_count;
         self.current_tx_count = 0;
-        return self.block_1_txs + self.block_2_txs + (self.block_3_txs / 2);
+        self.block_1_txs + self.block_2_txs + (self.block_3_txs / 2)
     }
 }
 
@@ -289,11 +289,7 @@ async fn run_event_forwarder_task(
                 }
 
                 // Send accesses update on BlockEnd events (after all access events are processed)
-                let send_accesses_update = if let EventName::BlockEnd = event_data.event_name {
-                    true
-                } else {
-                    false
-                };
+                let send_accesses_update = matches!(event_data.event_name, EventName::BlockEnd);
 
                 let _ = event_broadcast_sender.send(EventDataOrMetrics::Event(event_data));
 
