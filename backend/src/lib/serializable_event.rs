@@ -326,7 +326,7 @@ impl From<&EventData> for SerializableEventData {
             txn_hash: data.txn_hash.map(B256::from),
             payload: SerializableExecEvent::from(&data.payload),
             seqno: data.seqno,
-            timestamp_ns: data.timestamp_ns.clone(),
+            timestamp_ns: data.timestamp_ns,
         }
     }
 }
