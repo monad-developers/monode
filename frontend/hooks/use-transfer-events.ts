@@ -9,10 +9,11 @@ import {
 } from '@/constants/transfer-config'
 import { useEvents } from '@/hooks/use-events'
 import { parseTopicsString } from '@/lib/abi-decode'
-import type { SerializableEventData } from '@/types/events'
+import type { EventName, SerializableEventData } from '@/types/events'
 import type { TransferData } from '@/types/transfer'
 
 const MAX_TRANSFERS = 5000
+const TRANSFER_EVENT_TYPES: readonly EventName[] = ['TxnCallFrame', 'TxnLog']
 
 /**
  * Parse native transfer event (TxnCallFrame with non-zero value)
@@ -128,6 +129,7 @@ export function useTransferEvents() {
 
   const { isConnected } = useEvents({
     onEvent: handleEvent,
+    eventTypes: TRANSFER_EVENT_TYPES,
   })
 
   const clearTransfers = useCallback(() => {
