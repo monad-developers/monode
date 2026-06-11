@@ -63,7 +63,7 @@ pub struct ArrayPrefixFilter<T: PartialEq> {
 
 impl<T: PartialEq> ArrayPrefixFilter<T> {
     /// Checks if input array starts with filter values (prefix match)
-    pub fn matches(&self, value: &Vec<T>) -> bool {
+    pub fn matches(&self, value: &[T]) -> bool {
         self.values.is_empty() || value.starts_with(&self.values)
     }
 
@@ -192,7 +192,7 @@ impl EventFilter {
             return true;
         }
 
-        if self.includes_native_transfers() && is_native_transfer(&event) {
+        if self.includes_native_transfers() && is_native_transfer(event) {
             return true;
         }
 
