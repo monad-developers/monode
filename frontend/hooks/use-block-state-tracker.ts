@@ -5,9 +5,16 @@ import { useBlockchainSlowMotion } from '@/hooks/use-blockchain-slow-motion'
 import { useEvents } from '@/hooks/use-events'
 import { formatTimestamp } from '@/lib/timestamp'
 import type { Block, BlockState } from '@/types/block'
-import type { SerializableEventData } from '@/types/events'
+import type { EventName, SerializableEventData } from '@/types/events'
 
 const MAX_BLOCKS = 200
+const BLOCK_STATE_EVENT_TYPES: readonly EventName[] = [
+  'BlockStart',
+  'BlockQC',
+  'BlockFinalized',
+  'BlockVerified',
+  'BlockReject',
+]
 
 interface UseBlockStateTrackerReturn {
   blocks: Block[]
@@ -102,6 +109,7 @@ export function useBlockStateTracker(): UseBlockStateTrackerReturn {
 
   useEvents({
     onEvent: queueEvent,
+    eventTypes: BLOCK_STATE_EVENT_TYPES,
   })
 
   return {
