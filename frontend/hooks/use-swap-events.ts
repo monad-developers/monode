@@ -11,10 +11,11 @@ import {
 import { AUSD_ADDRESS, WMON_ADDRESS } from '@/constants/transfer-config'
 import { useEvents } from '@/hooks/use-events'
 import { parseTopicsString } from '@/lib/abi-decode'
-import type { SerializableEventData } from '@/types/events'
+import type { EventName, SerializableEventData } from '@/types/events'
 import type { SwapData } from '@/types/swap'
 
 const MAX_SWAPS = 2000
+const SWAP_EVENT_TYPES: readonly EventName[] = ['TxnLog']
 
 /**
  * Parse raw log data into normalized SwapData based on the provider
@@ -351,6 +352,7 @@ export function useSwapEvents() {
 
   const { isConnected } = useEvents({
     onEvent: handleEvent,
+    eventTypes: SWAP_EVENT_TYPES,
   })
 
   const clearSwaps = useCallback(() => {

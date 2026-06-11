@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useEvents } from '@/hooks/use-events'
-import type { SerializableEventData } from '@/types/events'
+import type { EventName, SerializableEventData } from '@/types/events'
 
 const PUBLISH_INTERVAL_MS = 1000
+const TXN_HEADER_EVENT_TYPES: readonly EventName[] = ['TxnHeaderStart']
 
 /**
  * Counts total transactions by observing `TxnHeaderStart`, but only publishes
@@ -23,6 +24,7 @@ export function useTotalTransactions(): number {
 
   useEvents({
     onEvent: handleTxnEvent,
+    eventTypes: TXN_HEADER_EVENT_TYPES,
   })
 
   useEffect(() => {
