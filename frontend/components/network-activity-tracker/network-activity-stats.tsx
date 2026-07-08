@@ -65,7 +65,7 @@ export const NetworkActivityStats = ({
   return (
     <AnimatedNumberGroup>
       <div className="flex justify-between gap-3 sm:gap-7 xs:justify-end">
-        <StatItem label="Transaction per second" value={currentTps} />
+        <StatItem label="Transactions per second" value={currentTps} />
         <StatItem
           label="Peak Volume"
           value={peakTps}
