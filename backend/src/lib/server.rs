@@ -60,6 +60,7 @@ struct TPSTracker {
     block_1_txs: usize,
     block_2_txs: usize,
     block_3_txs: usize,
+    block_4_txs: usize,
     current_tx_count: usize,
 }
 
@@ -72,15 +73,16 @@ impl TPSTracker {
         self.current_tx_count += 1;
     }
 
-    /// Calculates the TPS over an effective window of 2.5 blocks.
-    /// The formula sums the transaction counts of the two most recent full blocks and half of the newest (partial) block.
-    /// This is because average block time is approximately 400ms; summing 2.5 blocks provides a close approximation of one second.
+    /// Calculates the TPS over an effective window of ~3.33 blocks.
+    /// The formula sums the transaction counts of the three most recent full blocks and one third of the block before them.
+    /// This is because average block time is approximately 300ms; summing 3.33 blocks (3.33 * 300ms) provides a close approximation of one second.
     pub fn get_tps(&mut self) -> usize {
         self.block_1_txs = self.block_2_txs;
         self.block_2_txs = self.block_3_txs;
-        self.block_3_txs = self.current_tx_count;
+        self.block_3_txs = self.block_4_txs;
+        self.block_4_txs = self.current_tx_count;
         self.current_tx_count = 0;
-        self.block_1_txs + self.block_2_txs + (self.block_3_txs / 2)
+        self.block_2_txs + self.block_3_txs + self.block_4_txs + (self.block_1_txs / 3)
     }
 }
 
