@@ -256,6 +256,10 @@ async fn run_event_forwarder_task(
                 match event_data.event_name {
                     EventName::BlockStart => {
                         tps_event = Some(EventDataOrMetrics::TPS(tps_tracker.get_tps()));
+                        // txn_idx is scoped to a single block; drop anything left over
+                        // (e.g. from a TxnEnd missed due to an event-ring gap) so it
+                        // can't accumulate for the life of the process.
+                        current_txn_hashes.reset();
                     }
                     EventName::TxnHeaderStart => {
                         tps_tracker.record_tx();
