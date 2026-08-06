@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::event_filter::{is_restricted_mode, load_restricted_filters};
 use crate::event_listener::EventName;
 use crate::top_k_tracker::{AccessEntry, TopKTracker};
+use crate::txn_hash_tracker::TxnHashTracker;
 
 use super::event_filter::EventFilter;
 use super::event_listener::EventData;
@@ -214,7 +215,7 @@ async fn run_event_forwarder_task(
     let mut accesses_reset_interval = tokio::time::interval(std::time::Duration::from_mins(5));
 
     // Track current transaction hash per txn_idx
-    let mut current_txn_hashes: Vec<Option<[u8; 32]>> = vec![None; 10_000];
+    let mut current_txn_hashes = TxnHashTracker::new();
 
     let mut tps_tracker = TPSTracker::new();
 
@@ -237,7 +238,7 @@ async fn run_event_forwarder_task(
                 // Track txn_hash from TxnHeaderStart events
                 if let EventName::TxnHeaderStart = event_data.event_name {
                     if let ExecEvent::TxnHeaderStart { txn_index, txn_header_start, .. } = &event_data.payload {
-                        current_txn_hashes[*txn_index] = Some(txn_header_start.txn_hash.bytes);
+                        current_txn_hashes.record(*txn_index, txn_header_start.txn_hash.bytes);
                     } else {
                         unreachable!();
                     }
@@ -245,8 +246,8 @@ async fn run_event_forwarder_task(
 
                 // Populate txn_hash for events that have txn_idx
                 if let Some(txn_idx) = event_data.txn_idx {
-                    if let Some(Some(hash)) = current_txn_hashes.get(txn_idx) {
-                        event_data.txn_hash = Some(*hash);
+                    if let Some(hash) = current_txn_hashes.get(txn_idx) {
+                        event_data.txn_hash = Some(hash);
                     }
                 }
 
@@ -261,7 +262,7 @@ async fn run_event_forwarder_task(
                     }
                     EventName::TxnEnd => {
                         if let Some(txn_idx) = event_data.txn_idx {
-                            current_txn_hashes[txn_idx] = None;
+                            current_txn_hashes.clear(txn_idx);
                         }
                     }
                     EventName::AccountAccess => {
