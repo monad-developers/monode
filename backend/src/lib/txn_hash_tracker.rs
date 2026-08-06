@@ -29,6 +29,16 @@ impl TxnHashTracker {
     pub fn clear(&mut self, txn_idx: usize) {
         self.hashes.remove(&txn_idx);
     }
+
+    /// Drop all tracked hashes.
+    ///
+    /// `txn_idx` is scoped to a single block, so nothing left over from a
+    /// previous block is ever valid to keep. Call this on `BlockStart` so a
+    /// missed `TxnEnd` (e.g. from an event-ring gap) can't leave an orphaned
+    /// entry retained for the forwarder's lifetime.
+    pub fn reset(&mut self) {
+        self.hashes.clear();
+    }
 }
 
 #[cfg(test)]
@@ -86,5 +96,23 @@ mod tests {
         tracker.record(1, [2u8; 32]);
 
         assert_eq!(tracker.get(1), Some([2u8; 32]));
+    }
+
+    /// Covers the orphaned-entry case: a `TxnEnd` can be missed (e.g. the event-ring
+    /// reader hits a gap and resets), leaving `clear` never called for that txn_idx.
+    /// `reset` is the backstop that bounds memory regardless, by dropping everything
+    /// at the start of the next block.
+    #[test]
+    fn reset_drops_entries_never_cleared_by_a_missed_txn_end() {
+        let mut tracker = TxnHashTracker::new();
+        tracker.record(1, [1u8; 32]);
+        tracker.record(2, [2u8; 32]);
+        // txn_idx 2's TxnEnd is "missed" - no clear(2) call.
+        tracker.clear(1);
+
+        tracker.reset();
+
+        assert_eq!(tracker.get(1), None);
+        assert_eq!(tracker.get(2), None);
     }
 }
