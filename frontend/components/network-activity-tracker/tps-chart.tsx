@@ -28,19 +28,25 @@ const CHART_WINDOW_MS = 5 * 60 * 1000
 /** Smallest window to show early on, so the chart starts zoomed in rather than mostly empty. */
 const MIN_WINDOW_MS = 3 * 1000
 
+const SLIDING_CLOCK_INTERVAL_MS = 100
+
 /**
  * Drives a smoothly advancing "now" so the chart's x-domain slides
  * continuously instead of jumping by one slot as each point arrives.
- * Updates every animation frame for the smoothest motion; rAF auto-pauses
- * when the tab is hidden.
+ * Publishes at 10 Hz for smooth motion without re-rendering Recharts every
+ * animation frame; rAF auto-pauses when the tab is hidden.
  */
 function useSlidingNow(): number {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     let raf: number
-    const tick = () => {
-      setNow(Date.now())
+    let lastPublishedAt = 0
+    const tick = (timestamp: number) => {
+      if (timestamp - lastPublishedAt >= SLIDING_CLOCK_INTERVAL_MS) {
+        lastPublishedAt = timestamp
+        setNow(Date.now())
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -53,9 +59,9 @@ function useSlidingNow(): number {
 /**
  * Returns the history with its newest segment progressively "drawn": instead of
  * the last point appearing fully-formed, a head vertex travels from the previous
- * point to the newest one over the inter-arrival interval. `now` advances every
- * frame, so the head moves smoothly. Once it reaches the newest point the segment
- * is complete and the next arrival starts drawing the following one.
+ * point to the newest one over the inter-arrival interval. `now` advances with
+ * the sliding clock, so the head moves smoothly. Once it reaches the newest point
+ * the segment is complete and the next arrival starts drawing the following one.
  */
 function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
   if (history.length < 2) return history
