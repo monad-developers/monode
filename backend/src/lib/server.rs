@@ -131,7 +131,7 @@ async fn client_write_task(
     let mut accesses_buf: Vec<TopAccessesData> = Vec::new();
     let mut tps_buf: Vec<usize> = Vec::new();
 
-    loop {
+    'outer: loop {
         // Wait for first event
         match event_broadcast_receiver.recv().await {
             Ok(event) => process_event(event, &filter, &mut events_buf, &mut accesses_buf, &mut tps_buf),
@@ -160,7 +160,7 @@ async fn client_write_task(
                 let server_msg = ServerMessage::TopAccesses(accesses);
                 if let Err(e) = send_message(&mut ws_sender, server_msg).await {
                     error!("Failed to send accesses to {}: {}", addr, e);
-                    break;
+                    break 'outer;
                 }
             }
         }
@@ -170,7 +170,7 @@ async fn client_write_task(
                 let server_msg = ServerMessage::TPS(tps);
                 if let Err(e) = send_message(&mut ws_sender, server_msg).await {
                     error!("Failed to send TPS to {}: {}", addr, e);
-                    break;
+                    break 'outer;
                 }
             }
         }
