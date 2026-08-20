@@ -38,7 +38,8 @@ export function formatRelativeTime(timestamp: number): string {
   if (diffSeconds <= 0) return 'now'
   const mins = Math.floor(diffSeconds / 60)
   const secs = diffSeconds % 60
-  return `${mins}:${secs.toString().padStart(2, '0')}`
+  // Signed so ticks read as an offset from "now" (e.g. "-1:30" = 90s ago).
+  return `-${mins}:${secs.toString().padStart(2, '0')}`
 }
 
 export function formatTimeHMS(timestamp: number): string {
