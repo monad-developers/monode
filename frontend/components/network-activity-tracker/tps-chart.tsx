@@ -131,6 +131,19 @@ function interpolatedHead(
   }
 }
 
+/**
+ * The history as it is currently drawn, i.e. with the sweeping head in place of
+ * the newest raw point. Recharts is fed this rather than the raw history so the
+ * tooltip, cursor and active dot stay attached to the line the user can see;
+ * feeding it the raw point leaves the dot sitting up to one inter-arrival
+ * interval ahead of the visible head. Rebuilt at the sliding-clock rate only —
+ * TpsSeries interpolates from the raw history on its own, every frame.
+ */
+function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
+  const head = interpolatedHead(history, now)
+  return head ? [...history.slice(0, -1), head] : history
+}
+
 const round = (value: number) => Math.round(value * 10) / 10
 
 /** Builds the `d` attributes for the line and its filled area below it. */
@@ -280,6 +293,7 @@ export function TpsChart() {
 
   const windowStart = windowStartAt(history[0]?.timestamp ?? now, now)
   const ticks = buildTicks(windowStart, now)
+  const chartData = drawHistory(history, now)
 
   return (
     <div className="flex flex-col h-full">
@@ -314,7 +328,7 @@ export function TpsChart() {
             className="h-full min-w-2xl w-full p-0"
           >
             <AreaChart
-              data={history}
+              data={chartData}
               margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
             >
               <defs>
@@ -380,7 +394,9 @@ export function TpsChart() {
               {/*
                 The visible series is drawn by <TpsSeries> above; this Area is
                 kept transparent so recharts still owns the y-domain, the
-                tooltip payload and the active dot on hover.
+                tooltip payload and the active dot on hover. It reads the same
+                drawn history the line does, so the dot lands on the visible
+                head instead of the raw sample it is still sweeping towards.
               */}
               <Area
                 type="linear"
