@@ -1,8 +1,22 @@
 'use client'
 
 import Image from 'next/image'
-import { useEffect, useState } from 'react'
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Customized,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import {
   type ChartConfig,
   ChartContainer,
@@ -22,30 +36,67 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+const SERIES_COLOR = '#6E54FF'
+/** Matches recharts' <Area> default so the custom fill looks identical. */
+const SERIES_FILL_OPACITY = 0.6
+
 /** Maximum visible time window of the chart, matching the TPS history retained. */
 const CHART_WINDOW_MS = 5 * 60 * 1000
 
 /** Smallest window to show early on, so the chart starts zoomed in rather than mostly empty. */
 const MIN_WINDOW_MS = 3 * 1000
 
-const SLIDING_CLOCK_INTERVAL_MS = 100
+/**
+ * Start zoomed in to the earliest data point and expand the window as data
+ * accumulates, capping at CHART_WINDOW_MS once we have 5 minutes of history.
+ */
+function windowStartAt(earliest: number, now: number): number {
+  return Math.max(
+    now - CHART_WINDOW_MS,
+    Math.min(earliest, now - MIN_WINDOW_MS),
+  )
+}
 
 /**
- * Drives a smoothly advancing "now" so the chart's x-domain slides
- * continuously instead of jumping by one slot as each point arrives.
- * Publishes at 10 Hz for smooth motion without re-rendering Recharts every
- * animation frame; rAF auto-pauses when the tab is hidden.
+ * Fraction of the visible window the x-domain is allowed to jump between React
+ * renders. Roughly a pixel on a ~1000px-wide plot, so axis ticks still read as
+ * continuously sliding without re-rendering recharts on every frame. The line
+ * itself is not bound by this — it is redrawn every frame outside of React (see
+ * TpsSeries).
  */
-function useSlidingNow(): number {
+const CLOCK_STEP_FRACTION = 1 / 1000
+const CLOCK_MIN_INTERVAL_MS = 16
+const CLOCK_MAX_INTERVAL_MS = 100
+
+/**
+ * Drives an advancing "now" so the chart's x-domain slides continuously instead
+ * of jumping by one slot as each point arrives. The publish rate adapts to the
+ * zoom level: a narrow window moves many pixels per millisecond and needs every
+ * frame (and holds few points, so it is cheap), while the full 5-minute window
+ * crawls and can be published at 10 Hz. rAF auto-pauses when the tab is hidden.
+ */
+function useSlidingNow(earliest: number | undefined): number {
   const [now, setNow] = useState(() => Date.now())
+  const earliestRef = useRef(earliest)
+
+  useEffect(() => {
+    earliestRef.current = earliest
+  }, [earliest])
 
   useEffect(() => {
     let raf: number
-    let lastPublishedAt = 0
-    const tick = (timestamp: number) => {
-      if (timestamp - lastPublishedAt >= SLIDING_CLOCK_INTERVAL_MS) {
-        lastPublishedAt = timestamp
-        setNow(Date.now())
+    let lastPublishedAt = Date.now()
+    const tick = () => {
+      const current = Date.now()
+      const span =
+        current - windowStartAt(earliestRef.current ?? current, current)
+      const interval = Math.min(
+        CLOCK_MAX_INTERVAL_MS,
+        Math.max(CLOCK_MIN_INTERVAL_MS, span * CLOCK_STEP_FRACTION),
+      )
+      if (current - lastPublishedAt >= interval) {
+        lastPublishedAt = current
+        setNow(current)
       }
       raf = requestAnimationFrame(tick)
     }
@@ -57,27 +108,160 @@ function useSlidingNow(): number {
 }
 
 /**
- * Returns the history with its newest segment progressively "drawn": instead of
- * the last point appearing fully-formed, a head vertex travels from the previous
- * point to the newest one over the inter-arrival interval. `now` advances with
- * the sliding clock, so the head moves smoothly. Once it reaches the newest point
- * the segment is complete and the next arrival starts drawing the following one.
+ * The newest segment is drawn progressively: instead of the last point appearing
+ * fully-formed, a head vertex travels from the previous point to the newest one
+ * over the inter-arrival interval. Returns null while there is nothing to
+ * interpolate, in which case the raw last point is used.
  */
-function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
-  if (history.length < 2) return history
+function interpolatedHead(
+  history: TpsDataPoint[],
+  now: number,
+): TpsDataPoint | null {
+  if (history.length < 2) return null
 
   const target = history[history.length - 1]
   const from = history[history.length - 2]
   const duration = target.timestamp - from.timestamp
-  if (duration <= 0) return history
+  if (duration <= 0) return null
 
   const progress = Math.min(1, Math.max(0, (now - target.timestamp) / duration))
-  const head: TpsDataPoint = {
+  return {
     timestamp: from.timestamp + (target.timestamp - from.timestamp) * progress,
     tps: from.tps + (target.tps - from.tps) * progress,
   }
+}
 
-  return [...history.slice(0, -1), head]
+/**
+ * The history as it is currently drawn, i.e. with the sweeping head in place of
+ * the newest raw point. Recharts is fed this rather than the raw history so the
+ * tooltip, cursor and active dot stay attached to the line the user can see;
+ * feeding it the raw point leaves the dot sitting up to one inter-arrival
+ * interval ahead of the visible head. Rebuilt at the sliding-clock rate only —
+ * TpsSeries interpolates from the raw history on its own, every frame.
+ */
+function drawHistory(history: TpsDataPoint[], now: number): TpsDataPoint[] {
+  const head = interpolatedHead(history, now)
+  return head ? [...history.slice(0, -1), head] : history
+}
+
+const round = (value: number) => Math.round(value * 10) / 10
+
+/** Builds the `d` attributes for the line and its filled area below it. */
+function buildSeriesPaths(
+  history: TpsDataPoint[],
+  now: number,
+  toX: (timestamp: number) => number,
+  toY: (tps: number) => number,
+): { line: string; area: string } {
+  if (history.length === 0) return { line: '', area: '' }
+
+  const head = interpolatedHead(history, now)
+  const lastIndex = history.length - 1
+
+  let line = ''
+  for (let i = 0; i < history.length; i++) {
+    const point = i === lastIndex && head ? head : history[i]
+    line += `${i === 0 ? 'M' : 'L'}${round(toX(point.timestamp))},${round(toY(point.tps))}`
+  }
+
+  const baseY = round(toY(0))
+  const firstX = round(toX(history[0].timestamp))
+  const lastX = round(toX((head ?? history[lastIndex]).timestamp))
+
+  return { line, area: `${line}L${lastX},${baseY}L${firstX},${baseY}Z` }
+}
+
+interface RechartsOffset {
+  top: number
+  left: number
+  width: number
+  height: number
+}
+
+interface TpsSeriesProps {
+  history: TpsDataPoint[]
+  /** Injected by recharts' <Customized>: the plot rect, in svg coordinates. */
+  offset?: RechartsOffset
+  /** Injected by recharts' <Customized>: the configured y scales, keyed by axis id. */
+  yAxisMap?: Record<string, { scale: (value: number) => number }>
+}
+
+/**
+ * Draws the TPS line and its gradient fill.
+ *
+ * This is deliberately not a recharts <Area>: the head vertex and the sliding
+ * x-domain both move every frame, and re-rendering recharts at 60 Hz means
+ * rebuilding every axis, tick and layer for a series that can hold ~1000 points.
+ * Instead recharts re-renders at the (throttled) sliding-clock rate and only
+ * these two <path> elements are rewritten per frame, straight through the DOM.
+ */
+function TpsSeries({ history, offset, yAxisMap }: TpsSeriesProps) {
+  const clipId = `tps-clip-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  const lineRef = useRef<SVGPathElement>(null)
+  const areaRef = useRef<SVGPathElement>(null)
+  const latest = useRef<{
+    history: TpsDataPoint[]
+    offset?: RechartsOffset
+    yScale?: (value: number) => number
+  }>({ history })
+
+  const draw = useCallback(() => {
+    const { history: points, offset: rect, yScale } = latest.current
+    if (points.length === 0 || !rect || !yScale) return
+
+    const now = Date.now()
+    const start = windowStartAt(points[0].timestamp, now)
+    const span = Math.max(1, now - start)
+    const toX = (timestamp: number) =>
+      rect.left + ((timestamp - start) / span) * rect.width
+
+    const { line, area } = buildSeriesPaths(points, now, toX, yScale)
+    lineRef.current?.setAttribute('d', line)
+    areaRef.current?.setAttribute('d', area)
+  }, [])
+
+  // Keep the frame loop's inputs current and repaint before the browser shows
+  // the commit, so a recharts re-render never flashes a stale line.
+  useLayoutEffect(() => {
+    latest.current = { history, offset, yScale: yAxisMap?.['0']?.scale }
+    draw()
+  })
+
+  useEffect(() => {
+    let raf: number
+    const tick = () => {
+      draw()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [draw])
+
+  if (!offset) return null
+
+  return (
+    <g className="recharts-layer">
+      <defs>
+        <clipPath id={clipId}>
+          <rect
+            x={offset.left}
+            y={offset.top}
+            width={offset.width}
+            height={offset.height}
+          />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clipId})`}>
+        <path
+          ref={areaRef}
+          fill="url(#tpsGradient)"
+          fillOpacity={SERIES_FILL_OPACITY}
+          stroke="none"
+        />
+        <path ref={lineRef} fill="none" stroke={SERIES_COLOR} strokeWidth={2} />
+      </g>
+    </g>
+  )
 }
 
 /** Nice, human-friendly tick steps in ms for the relative-time x-axis. */
@@ -105,19 +289,11 @@ export function TpsChart() {
   const { currentTps, peakTps, history } = useTps()
   const totalTransactions = useTotalTransactions()
   const hasData = history.length > 0
-  const now = useSlidingNow()
+  const now = useSlidingNow(history[0]?.timestamp)
 
-  // Start zoomed in to the earliest data point and expand the window as data
-  // accumulates, capping at CHART_WINDOW_MS once we have 5 minutes of history.
-  const earliest = history[0]?.timestamp ?? now
-  const windowStart = Math.max(
-    now - CHART_WINDOW_MS,
-    Math.min(earliest, now - MIN_WINDOW_MS),
-  )
-
-  // Progressively draw the newest segment rather than snapping it into place.
-  const chartData = drawHistory(history, now)
+  const windowStart = windowStartAt(history[0]?.timestamp ?? now, now)
   const ticks = buildTicks(windowStart, now)
+  const chartData = drawHistory(history, now)
 
   return (
     <div className="flex flex-col h-full">
@@ -163,11 +339,12 @@ export function TpsChart() {
                   x2="0%"
                   y2="100%"
                 >
-                  <stop offset="55%" stopColor="#6E54FF" />
+                  <stop offset="55%" stopColor={SERIES_COLOR} />
                   <stop offset="100%" stopColor="rgba(0, 0, 0, 0)" />
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
+              <Customized component={<TpsSeries history={history} />} />
               <XAxis
                 dataKey="timestamp"
                 type="number"
@@ -214,12 +391,20 @@ export function TpsChart() {
                   />
                 }
               />
+              {/*
+                The visible series is drawn by <TpsSeries> above; this Area is
+                kept transparent so recharts still owns the y-domain, the
+                tooltip payload and the active dot on hover. It reads the same
+                drawn history the line does, so the dot lands on the visible
+                head instead of the raw sample it is still sweeping towards.
+              */}
               <Area
                 type="linear"
                 dataKey="tps"
-                stroke="#6E54FF"
-                strokeWidth={2}
+                stroke={SERIES_COLOR}
+                strokeOpacity={0}
                 fill="url(#tpsGradient)"
+                fillOpacity={0}
                 dot={false}
                 isAnimationActive={false}
               />
