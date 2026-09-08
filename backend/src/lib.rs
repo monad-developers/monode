@@ -13,3 +13,6 @@ pub mod server {
 pub mod top_k_tracker {
     include!("lib/top_k_tracker.rs");
 }
+pub mod txn_hash_tracker {
+    include!("lib/txn_hash_tracker.rs");
+}
