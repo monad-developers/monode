@@ -301,7 +301,7 @@ class WebSocketMonitor {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: 'cc: <@U08D2LJQB1D> <@U08GQ6KPQNR> <@U090UB05LSD>',
+              text: 'cc: <@U094E2D06GN> <@U08GQ6KPQNR> <@U090UB05LSD>',
             },
           },
         ],
@@ -437,7 +437,7 @@ class WebSocketMonitor {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: 'cc: <@U08D2LJQB1D> <@U08GQ6KPQNR> <@U090UB05LSD>',
+              text: 'cc: <@U094E2D06GN> <@U08GQ6KPQNR> <@U090UB05LSD>',
             },
           },
         ],
